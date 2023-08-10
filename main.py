@@ -40,7 +40,7 @@ class LaserTracker(object):
         self.sat_max = sat_max
         self.val_min = val_min
         self.val_max = val_max
-        self.mask_num = 1
+        self.mask = []
         self.win = 0
         
         self.capture = None  # camera capture device
@@ -54,15 +54,12 @@ class LaserTracker(object):
 
         self.previous_position = None
 
-    def create_and_position_window(self, name, scale, xpos, ypos):
+    def create_and_position_window(self, name, xpos, ypos):
         """Creates a named widow placing it on the screen at (xpos, ypos)."""
         # Create a window
         cv2.namedWindow(name)
         # Resize it to the size of the camera image
-        if (scale):
-            cv2.resizeWindow(name, self.cam_width*2, self.cam_height*2)
-        else:
-            cv2.resizeWindow(name, self.cam_width, self.cam_height)
+        cv2.resizeWindow(name, self.cam_width, self.cam_height)
         # Move to (xpos,ypos) on the screen
         cv2.moveWindow(name, xpos, ypos)
 
@@ -101,14 +98,16 @@ class LaserTracker(object):
         if c in ['q', 'Q', chr(27)]:
             sys.exit(0)
         elif c in ['1']:
-            self.mask_num = 1
+            self.make_mask(1)
             self.win = 0
         elif c in ['2']:
-            self.mask_num = 2
+            self.make_mask(2)
+            self.win = 0
+        elif c in ['0']:
+            self.capture_pattern()
             self.win = 0
         elif c in [' ', 'c', 'C']:
             self.win = 0
-       
 
     def threshold_image(self, channel):
         if channel == "hue":
@@ -149,7 +148,7 @@ class LaserTracker(object):
         # cv2.imshow('RGB_VideoFrame', frame)
         cv2.imshow('Laser Light', self.channels['laser'])
         cv2.imshow('Key', self.channels['key'])
-        # what to display in the indicating window
+        # "Loading screen" to display in the indicating window
         if (self.win):
             cv2.imshow('Laser Key!', win_img)
         elif (count < 10):
@@ -160,8 +159,8 @@ class LaserTracker(object):
             cv2.imshow('Laser Key!', load_2)
         else:
             cv2.imshow('Laser Key!', load_3)
+        # cycle through loading images
         count = (count+1) % 55
-
 
     def setup_windows(self):
         sys.stdout.write("Using OpenCV version: {0}\n".format(cv2.__version__))
@@ -175,16 +174,16 @@ class LaserTracker(object):
         load_3 = cv2.imread('imgs\load_3.png')
 
         # create output windows
-        self.create_and_position_window('Laser Light', False,
+        self.create_and_position_window('Laser Light',
                                          0, 0)
         # self.create_and_position_window('RGB_VideoFrame', False,
         #                                 10 + self.cam_width, 0)
-        self.create_and_position_window('Key', False,
+        self.create_and_position_window('Key',
                                         10 + self.cam_width, 0) 
-        self.create_and_position_window('Laser Key!', True,
+        self.create_and_position_window('Laser Key!',
                                         20 + self.cam_width, 10)
 
-    def track(self, frame, mask):
+    def track(self, frame):
         """
         Track the position of the laser pointer.
 
@@ -193,12 +192,12 @@ class LaserTracker(object):
         """
         center = None
 
-        countours = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+        countours = cv2.findContours(frame, cv2.RETR_EXTERNAL,
                                      cv2.CHAIN_APPROX_SIMPLE)[-2]
 
         # only proceed if at least one contour was found
         if len(countours) > 0:
-            # find the largest contour in the mask, then use
+            # find the largest contour in the frame, then use
             # it to compute the minimum enclosing circle and
             # centroid
             c = max(countours, key=cv2.contourArea)
@@ -237,7 +236,7 @@ class LaserTracker(object):
         )
 
         # track to find large enough point
-        self.track(frame, self.channels['laser'])
+        self.track(self.channels['laser'])
         # display laser light identified in key boxes
         if (self.previous_position != None):
             # set win if pattern detected
@@ -250,31 +249,23 @@ class LaserTracker(object):
 
     def unlock(self):
         """ Analyse image for unlocking pattern """
-        # set variables
-        ox = 130
-        oy = 130
+        # function variables
+        box_len = 10
         n = 0
-        
-        # select 'mask'
-        if (self.mask_num == 1):
-            mask = [[0, 0], [0, oy], [0, -oy], [-ox, 0], [ox, 0]]
-        elif (self.mask_num == 2):
-            mask = [[0, 0], [ox, 0], [-ox + 30, 0], [ox/2 - 50, 2*oy/3 - 10], [-ox/2, 2*oy/3], [ox/2, -2*oy/3 + 10], [-ox/2 + 30, -2*ox/3 + 30]]
-
-        passes = numpy.zeros(len(mask))
+        passes = numpy.zeros(len(self.mask))
 
         # define centre point
         c_x = self.previous_position[0] #int(self.cam_width / 2)
         c_y = self.previous_position[1] #int(self.cam_height / 2)
 
         # check for points around centre
-        for offset in mask: 
+        for offset in self.mask: 
             flag = 0
             sq_count = 0
-            for x in range(-20, 20):
+            for x in range(-box_len, box_len):
                 if (flag):
                     break
-                for y in range(-20, 20):
+                for y in range(-box_len, box_len):
                     x_pos = x + c_x + int(offset[0])
                     y_pos = y + c_y + int(offset[1])
                     # keep it all in bounds - for variable centre only
@@ -286,7 +277,7 @@ class LaserTracker(object):
                         y_pos = 0
                     else:
                         y_pos = min(self.cam_height-1, y_pos)
-                    # weigth the spots detected
+                    # for debugging - fill in the boxes we're looking for a point in
                     self.channels['key'][y_pos, x_pos] = 255
                     if (self.channels['laser'][y_pos, x_pos]):
                         sq_count += 1
@@ -294,22 +285,65 @@ class LaserTracker(object):
                             passes[n] = 1
                             flag = 1
                             break
-            # increase count`
+            # increase count`to move to next window
             n += 1
         
         # return bool - i.e. whether we've found something in every square 
         return not(0 in passes)
+    
+    def capture_pattern(self, frame):
+        """ Function to cpature pattern created and convert 
+        to vector of coordinates to make a mask out of """
+        countours = cv2.findContours(frame, cv2.RETR_EXTERNAL,
+                                     cv2.CHAIN_APPROX_SIMPLE)[-2]
+        mask = []
+
+        # only proceed if at least one contour was found
+        if len(countours) > 0:
+            for c in countours:
+                ((x, y), radius) = cv2.minEnclosingCircle(c)
+                moments = cv2.moments(c)
+                if moments["m00"] > 0:
+                    center = int(moments["m10"] / moments["m00"]), \
+                            int(moments["m01"] / moments["m00"])
+                else:
+                    center = int(x), int(y)
+                mask.append(center)
+        else:
+            sys.stderr.write("Could not find Laser points. Quitting\n")
+            return 0
+        # return generated coordinate list
+        self.mask = mask
+
+    def make_mask(self, num):
+        """ Make an array of coordinates at which to place windows 
+            relative to some central point """
+        # set variables
+        ox = 130
+        oy = 130
+        n = 0
         
+        # select 'mask'
+        if (num == 1):
+            mask = [[0, 0], [0, oy], [0, -oy], [-ox, 0], [ox, 0]]
+        elif (num == 2):
+            mask = [[0, 0], [ox, 0], [-ox + 30, 0], [ox/2 - 50, 2*oy/3 - 10], [-ox/2, 2*oy/3], [ox/2, -2*oy/3 + 10], [-ox/2 + 30, -2*ox/3 + 30]]
+        
+        self.mask = mask
+   
     def run(self):
         # Set up window positions
         self.setup_windows()
         # Set up the camera capture from device 2 - Phone over USB
         self.setup_camera_capture(2)
 
-        # set up mask and key channels
+        # set up mask and key channel
+        self.make_mask()
         self.channels['key'] = numpy.zeros((self.cam_height, self.cam_width, 1),
                                     numpy.uint8)
         
+        
+        # read initial frames before attempting to analyse image
         for n in range(5):
             success, frame = self.capture.read()
             if not success:  # no image captured... end the processing
