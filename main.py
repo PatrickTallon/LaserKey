@@ -5,6 +5,14 @@ import cv2
 import sys
 import numpy
 
+# declare global variables
+win_img = None
+load_0 = None
+load_1 = None
+load_2= None
+load_3 = None
+count = 0
+
 class LaserTracker(object):
 
     def __init__(self, cam_width=640, cam_height=480, hue_min=20, hue_max=160,
@@ -32,25 +40,29 @@ class LaserTracker(object):
         self.sat_max = sat_max
         self.val_min = val_min
         self.val_max = val_max
-
+        self.mask_num = 1
+        self.win = 0
+        
         self.capture = None  # camera capture device
         self.channels = {
             'hue': None,
             'saturation': None,
             'value': None,
             'laser': None,
-            'mask' : None, 
             'key' : None
         }
 
         self.previous_position = None
 
-    def create_and_position_window(self, name, xpos, ypos):
+    def create_and_position_window(self, name, scale, xpos, ypos):
         """Creates a named widow placing it on the screen at (xpos, ypos)."""
         # Create a window
         cv2.namedWindow(name)
         # Resize it to the size of the camera image
-        cv2.resizeWindow(name, self.cam_width, self.cam_height)
+        if (scale):
+            cv2.resizeWindow(name, self.cam_width*2, self.cam_height*2)
+        else:
+            cv2.resizeWindow(name, self.cam_width, self.cam_height)
         # Move to (xpos,ypos) on the screen
         cv2.moveWindow(name, xpos, ypos)
 
@@ -88,6 +100,15 @@ class LaserTracker(object):
         c = chr(key & 255)
         if c in ['q', 'Q', chr(27)]:
             sys.exit(0)
+        elif c in ['1']:
+            self.mask_num = 1
+            self.win = 0
+        elif c in ['2']:
+            self.mask_num = 2
+            self.win = 0
+        elif c in [' ', 'c', 'C']:
+            self.win = 0
+       
 
     def threshold_image(self, channel):
         if channel == "hue":
@@ -123,19 +144,45 @@ class LaserTracker(object):
         """Display the combined image and (optionally) all other image channels
         NOTE: default color space in OpenCV is BGR.
         """
+        global win_img, load_0, load_1, load_2, load_3, count
+
         # cv2.imshow('RGB_VideoFrame', frame)
-        cv2.imshow('LaserPointer', self.channels['laser'])
+        cv2.imshow('Laser Light', self.channels['laser'])
         cv2.imshow('Key', self.channels['key'])
+        # what to display in the indicating window
+        if (self.win):
+            cv2.imshow('Laser Key!', win_img)
+        elif (count < 10):
+            cv2.imshow('Laser Key!', load_0)
+        elif (count <= 25):
+            cv2.imshow('Laser Key!', load_1)
+        elif (count <= 40):
+            cv2.imshow('Laser Key!', load_2)
+        else:
+            cv2.imshow('Laser Key!', load_3)
+        count = (count+1) % 55
+
 
     def setup_windows(self):
         sys.stdout.write("Using OpenCV version: {0}\n".format(cv2.__version__))
+        global win_img, load_0, load_1, load_2, load_3
+
+        # load in images to display for winning
+        win_img = cv2.imread('imgs\win_img.png')
+        load_0 = cv2.imread('imgs\load_0.png')
+        load_1 = cv2.imread('imgs\load_1.png')
+        load_2 = cv2.imread('imgs\load_2.png')
+        load_3 = cv2.imread('imgs\load_3.png')
 
         # create output windows
-        self.create_and_position_window('LaserPointer', 0, 0)
-        # self.create_and_position_window('RGB_VideoFrame',
+        self.create_and_position_window('Laser Light', False,
+                                         0, 0)
+        # self.create_and_position_window('RGB_VideoFrame', False,
         #                                 10 + self.cam_width, 0)
-        self.create_and_position_window('Key',
+        self.create_and_position_window('Key', False,
                                         10 + self.cam_width, 0) 
+        self.create_and_position_window('Laser Key!', True,
+                                        20 + self.cam_width, 10)
 
     def track(self, frame, mask):
         """
@@ -193,55 +240,81 @@ class LaserTracker(object):
         self.track(frame, self.channels['laser'])
         # display laser light identified in key boxes
         if (self.previous_position != None):
+            # set win if pattern detected
             self.channels['key'] = cv2.bitwise_and(
                     self.channels['laser'], 
-                    self.channels['mask']
+                    self.channels['key']
             )
-          
+            if (self.unlock() == 1):
+                self.win = 1    
 
-    def mask(self):
+    def unlock(self):
         """ Analyse image for unlocking pattern """
-        # define distances to check for points
-        off_x = 140
-        off_y = 140
+        # set variables
+        ox = 130
+        oy = 130
+        n = 0
+        
+        # select 'mask'
+        if (self.mask_num == 1):
+            mask = [[0, 0], [0, oy], [0, -oy], [-ox, 0], [ox, 0]]
+        elif (self.mask_num == 2):
+            mask = [[0, 0], [ox, 0], [-ox + 30, 0], [ox/2 - 50, 2*oy/3 - 10], [-ox/2, 2*oy/3], [ox/2, -2*oy/3 + 10], [-ox/2 + 30, -2*ox/3 + 30]]
 
-        # set up mask and key channels
-        self.channels['mask'] = numpy.zeros((self.cam_height, self.cam_width, 1),
-                                    numpy.uint8)
-        self.channels['key'] = numpy.zeros((self.cam_height, self.cam_width, 1),
-                                    numpy.uint8)
+        passes = numpy.zeros(len(mask))
 
         # define centre point
-        c_x = int(self.cam_width / 2)
-        c_y = int(self.cam_height / 2)
+        c_x = self.previous_position[0] #int(self.cam_width / 2)
+        c_y = self.previous_position[1] #int(self.cam_height / 2)
 
         # check for points around centre
-        for x_mult in [-1, 0, 1]:
-            for y_mult in [-1, 0, 1,]:
-                # check box around area
-                for x in range(-20, 20):
-                    for y in range(-20, 20):
-                        x_pos = x + c_x + off_x*x_mult
-                        y_pos = y + c_y + off_y*y_mult
-                        # keep it all in bounds - for variable centre only
-                        # if (x_pos < 0):
-                        #     x_pos = 0
-                        # else:
-                        #     x_pos = min(self.cam_width-1, x_pos)
-                        # if (y_pos < 0):
-                        #     y_pos = 0
-                        # else:
-                        #     y_pos = min(self.cam_height-1, y_pos)
-                        # highlight area
-                        self.channels['mask'][y_pos, x_pos] = 255        
-    
+        for offset in mask: 
+            flag = 0
+            sq_count = 0
+            for x in range(-20, 20):
+                if (flag):
+                    break
+                for y in range(-20, 20):
+                    x_pos = x + c_x + int(offset[0])
+                    y_pos = y + c_y + int(offset[1])
+                    # keep it all in bounds - for variable centre only
+                    if (x_pos < 0):
+                        x_pos = 0
+                    else:
+                        x_pos = min(self.cam_width-1, x_pos)
+                    if (y_pos < 0):
+                        y_pos = 0
+                    else:
+                        y_pos = min(self.cam_height-1, y_pos)
+                    # weigth the spots detected
+                    self.channels['key'][y_pos, x_pos] = 255
+                    if (self.channels['laser'][y_pos, x_pos]):
+                        sq_count += 1
+                        if (sq_count >= 5):
+                            passes[n] = 1
+                            flag = 1
+                            break
+            # increase count`
+            n += 1
+        
+        # return bool - i.e. whether we've found something in every square 
+        return not(0 in passes)
+        
     def run(self):
         # Set up window positions
         self.setup_windows()
         # Set up the camera capture from device 2 - Phone over USB
         self.setup_camera_capture(2)
-        # create mask
-        self.mask()
+
+        # set up mask and key channels
+        self.channels['key'] = numpy.zeros((self.cam_height, self.cam_width, 1),
+                                    numpy.uint8)
+        
+        for n in range(5):
+            success, frame = self.capture.read()
+            if not success:  # no image captured... end the processing
+                sys.stderr.write("Could not read camera frame. Quitting\n")
+                sys.exit(1)
 
         while True:
             # 1. capture the current image
@@ -262,9 +335,9 @@ if __name__ == '__main__':
         cam_height=480,
         hue_min=0,
         hue_max=60,
-        sat_min=40,
+        sat_min=30,
         sat_max=255,
-        val_min=180,
+        val_min=140,
         val_max=255
     )
     tracker.run()
